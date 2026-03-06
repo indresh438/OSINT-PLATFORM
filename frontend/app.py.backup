@@ -1,0 +1,642 @@
+"""Streamlit Dashboard for OSINT Platform"""
+import streamlit as st
+import requests
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import os
+
+# Configuration
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+API_BASE = f"{BACKEND_URL}/api/v1"
+
+# Page configuration
+st.set_page_config(
+    page_title="OSINT Platform",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #1f77b4;
+    }
+    .entity-card {
+        background-color: #ffffff;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+    }
+    .stAlert {
+        margin-top: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+def check_backend_health():
+    """Check if backend is accessible"""
+    try:
+        response = requests.get(f"{API_BASE}/health", timeout=5)
+        return response.status_code == 200, response.json()
+    except Exception as e:
+        return False, {"error": str(e)}
+
+
+def get_statistics():
+    """Get system statistics"""
+    try:
+        response = requests.get(f"{API_BASE}/stats", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        st.error(f"Failed to get statistics: {e}")
+        return None
+
+
+def search_entities(query, entity_types=None, limit=100, deduplicate=False, exclude_tables=None, exclude_sources=None):
+    """Search entities"""
+    try:
+        payload = {
+            "query": query,
+            "limit": limit,
+            "deduplicate": deduplicate
+        }
+        
+        if entity_types:
+            payload["entity_types"] = entity_types
+        
+        if exclude_tables:
+            payload["exclude_tables"] = exclude_tables
+        
+        if exclude_sources:
+            payload["exclude_sources"] = exclude_sources
+        
+        response = requests.post(f"{API_BASE}/search", json=payload, timeout=30)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Search failed: {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"Search error: {e}")
+        return None
+
+
+def get_entity_relationships(entity_id, depth=1):
+    """Get entity relationships"""
+    try:
+        response = requests.get(
+            f"{API_BASE}/entities/{entity_id}/relationships",
+            params={"depth": depth},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        st.error(f"Failed to get relationships: {e}")
+        return None
+
+
+def start_import_job(source_name, tables=None, field_mapping=None, dump_file=None):
+    """Start MySQL import job"""
+    try:
+        payload = {
+            "source_name": source_name,
+            "tables": tables,
+            "field_mapping": field_mapping,
+            "dump_file": dump_file
+        }
+        
+        response = requests.post(f"{API_BASE}/import/mysql", json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Import failed: {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"Import error: {e}")
+        return None
+
+
+def get_import_status(job_id):
+    """Get import job status"""
+    try:
+        response = requests.get(f"{API_BASE}/import/status/{job_id}", timeout=10)
+        
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        st.error(f"Failed to get job status: {e}")
+        return None
+
+
+def main():
+    """Main application"""
+    
+    # Header
+    st.markdown('<div class="main-header">🔍 OSINT Intelligence Platform</div>', unsafe_allow_html=True)
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("Navigation")
+        page = st.radio(
+            "Select Page",
+            ["🏠 Dashboard", "🔍 Search", "📊 Statistics", "📥 Import Data", "🕸️ Relationships"]
+        )
+        
+        st.divider()
+        
+        # Backend health check
+        st.subheader("System Status")
+        is_healthy, health_data = check_backend_health()
+        
+        if is_healthy:
+            st.success("✅ Backend Online")
+            
+            services = health_data.get("services", {})
+            for service, status in services.items():
+                icon = "✅" if status else "❌"
+                st.text(f"{icon} {service.upper()}")
+        else:
+            st.error("❌ Backend Offline")
+            st.warning("Please start the backend services")
+    
+    # Main content
+    if page == "🏠 Dashboard":
+        show_dashboard()
+    elif page == "🔍 Search":
+        show_search()
+    elif page == "📊 Statistics":
+        show_statistics()
+    elif page == "📥 Import Data":
+        show_import()
+    elif page == "🕸️ Relationships":
+        show_relationships()
+
+
+def show_dashboard():
+    """Show dashboard overview"""
+    st.header("📊 System Overview")
+    
+    stats = get_statistics()
+    
+    if stats:
+        # Overview metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        es_stats = stats.get("elasticsearch", {})
+        mongo_stats = stats.get("mongodb", {})
+        neo4j_stats = stats.get("neo4j", {})
+        
+        with col1:
+            total_es = es_stats.get("total_entities", 0)
+            st.metric("📇 Indexed Entities", f"{total_es:,}")
+        
+        with col2:
+            total_mongo = mongo_stats.get("total_entities", 0)
+            st.metric("💾 Stored Entities", f"{total_mongo:,}")
+        
+        with col3:
+            total_nodes = neo4j_stats.get("total_nodes", 0)
+            st.metric("🕸️ Graph Nodes", f"{total_nodes:,}")
+        
+        with col4:
+            total_rels = neo4j_stats.get("total_relationships", 0)
+            st.metric("🔗 Relationships", f"{total_rels:,}")
+        
+        st.divider()
+        
+        # Entity type distribution
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Entity Types Distribution")
+            by_type = es_stats.get("by_type", {})
+            
+            if by_type:
+                df_types = pd.DataFrame(list(by_type.items()), columns=["Type", "Count"])
+                fig = px.pie(df_types, values="Count", names="Type", title="Entities by Type")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No data available")
+        
+        with col2:
+            st.subheader("Data Sources Distribution")
+            by_source = es_stats.get("by_source", {})
+            
+            if by_source:
+                df_sources = pd.DataFrame(list(by_source.items()), columns=["Source", "Count"])
+                fig = px.bar(df_sources, x="Source", y="Count", title="Entities by Source")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No data available")
+    else:
+        st.warning("Unable to load statistics. Please check backend connection.")
+
+
+def show_search():
+    """Show search interface"""
+    st.header("🔍 Search OSINT Entities")
+    
+    # Search form
+    with st.form("search_form"):
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            query = st.text_input("Search Query", placeholder="Enter email, IP, domain, username, phone...")
+        
+        with col2:
+            limit = st.number_input("Results Limit", min_value=10, max_value=1000, value=100)
+        
+        # Minimal professional filters
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            entity_types = st.multiselect(
+                "🎯 Filter by Type (optional)",
+                ["email", "ip", "domain", "username", "phone", "hash", "url"],
+                default=None
+            )
+        
+        with col2:
+            deduplicate = st.checkbox(
+                "✨ Hide Duplicates",
+                value=True,
+                help="Show only unique records"
+            )
+        
+        # Hidden but functional - exclude common noise tables automatically
+        exclude_tables = ["notifications", "logs", "sessions", "audit", "cache", "tokens"] if deduplicate else None
+        exclude_sources_input = None
+        
+        submit = st.form_submit_button("🔍 Search", use_container_width=True)
+    
+    # Execute search
+    if submit and query:
+        # Parse exclusion lists
+        exclude_sources = [s.strip() for s in exclude_sources_input.split(",")] if exclude_sources_input else None
+        exclude_sources = [s for s in exclude_sources if s] if exclude_sources else None
+        
+        with st.spinner("Searching..."):
+            results = search_entities(
+                query, 
+                entity_types or None, 
+                limit,
+                deduplicate=deduplicate,
+                exclude_tables=exclude_tables,
+                exclude_sources=exclude_sources
+            )
+        
+        if results:
+            total = results.get("total", 0)
+            entities = results.get("results", [])
+            took = results.get("took", 0)
+            
+            # Show filter summary
+            # Minimal professional header
+            st.markdown(f"""
+            <div style="background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); 
+                        padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; color: white;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-size: 28px; font-weight: bold;">{total}</div>
+                        <div style="opacity: 0.9;">leak(s) found • {took:.2f}s</div>
+                    </div>
+                    <div style="text-align: right;">
+                        {'<span style="background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 15px; font-size: 13px;">✨ Unique only</span>' if deduplicate else ''}
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if entities:
+                # Group results by source (database)
+                leaks_by_source = {}
+                for entity in entities:
+                    source = entity.get('source', 'Unknown Source')
+                    if source not in leaks_by_source:
+                        leaks_by_source[source] = []
+                    leaks_by_source[source].append(entity)
+                
+                # Display summary
+                num_sources = len(leaks_by_source)
+                total_records = len(entities)
+                
+                st.markdown(f"""
+                <div style="padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                            border-radius: 10px; margin-bottom: 20px; color: white;">
+                    <h2 style="margin: 0; color: white;">� {total_records} Leak(s) Found in {num_sources} Database(s)</h2>
+                    <p style="margin: 10px 0 0 0; opacity: 0.9;">Click on each database to view detailed records</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Display each database with its records
+                for source, source_entities in leaks_by_source.items():
+                    num_records = len(source_entities)
+                    duplicate_total = sum(e.get('duplicate_count', 1) for e in source_entities)
+                    
+                    # Database header with record count
+                    with st.expander(
+                        f"💾 **{source}** - {num_records} record(s) " + 
+                        (f"({duplicate_total} total including duplicates)" if duplicate_total > num_records else ""),
+                        expanded=True
+                    ):
+                        # Group by table within this database
+                        tables_in_source = {}
+                        for entity in source_entities:
+                            table = entity.get('source_table', 'Unknown Table')
+                            if table not in tables_in_source:
+                                tables_in_source[table] = []
+                            tables_in_source[table].append(entity)
+                        
+                        # Display each table
+                        for table, table_entities in tables_in_source.items():
+                            st.markdown(f"#### 📊 Table: `{table}` ({len(table_entities)} record(s))")
+                            
+                            # Display records in a clean card format
+                            for idx, entity in enumerate(table_entities, 1):
+                                duplicate_count = entity.get('duplicate_count', 0)
+                                
+                                # Create a clean card for each record
+                                card_color = "#f8f9fa" if idx % 2 == 0 else "#ffffff"
+                                duplicate_badge = ""
+                                if duplicate_count > 1:
+                                    duplicate_badge = f'<span style="background: #ff6b6b; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">🔄 {duplicate_count} duplicates</span>'
+                                
+                                st.markdown(f"""
+                                <div style="background: {card_color}; padding: 15px; border-radius: 8px; 
+                                            margin-bottom: 10px; border-left: 4px solid #667eea;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <strong style="color: #2d3436; font-size: 14px;">
+                                            #{idx} {entity.get('entity_type', 'unknown').upper()}: {entity.get('value', 'N/A')}
+                                        </strong>
+                                        {duplicate_badge}
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Show details in columns
+                                col1, col2, col3 = st.columns(3)
+                                
+                                with col1:
+                                    st.markdown("**📋 Entity Details**")
+                                    if entity.get('email'):
+                                        st.text(f"📧 {entity['email']}")
+                                    if entity.get('username'):
+                                        st.text(f"👤 {entity['username']}")
+                                    if entity.get('phone'):
+                                        st.text(f"📱 {entity['phone']}")
+                                
+                                with col2:
+                                    st.markdown("**🌐 Network Info**")
+                                    if entity.get('ip'):
+                                        st.text(f"🖥️ {entity['ip']}")
+                                    if entity.get('domain'):
+                                        st.text(f"🌍 {entity['domain']}")
+                                    if entity.get('url'):
+                                        st.text(f"🔗 {entity.get('url')}")
+                                
+                                with col3:
+                                    st.markdown("**⏱️ Metadata**")
+                                    timestamp = entity.get('timestamp', 'N/A')
+                                    if timestamp != 'N/A':
+                                        try:
+                                            from datetime import datetime
+                                            dt = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+                                            st.text(f"📅 {dt.strftime('%Y-%m-%d %H:%M')}")
+                                        except:
+                                            st.text(f"📅 {timestamp}")
+                                    st.text(f"🎯 Confidence: {entity.get('confidence', 1.0)}")
+                                
+                                # Show additional metadata if available
+                                if entity.get('metadata'):
+                                    with st.expander("🔍 View Additional Data", expanded=False):
+                                        st.json(entity['metadata'])
+                                
+                                st.divider()
+            else:
+                st.info("🔍 No results found. Try different search terms or adjust filters.")
+
+
+def show_statistics():
+    """Show detailed statistics"""
+    st.header("📊 Detailed Statistics")
+    
+    if st.button("🔄 Refresh Statistics"):
+        st.rerun()
+    
+    stats = get_statistics()
+    
+    if stats:
+        # Elasticsearch stats
+        st.subheader("Elasticsearch Index")
+        es_stats = stats.get("elasticsearch", {})
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Entities", f"{es_stats.get('total_entities', 0):,}")
+        with col2:
+            by_type = es_stats.get("by_type", {})
+            st.metric("Entity Types", len(by_type))
+        with col3:
+            by_source = es_stats.get("by_source", {})
+            st.metric("Data Sources", len(by_source))
+        
+        # MongoDB stats
+        st.subheader("MongoDB Storage")
+        mongo_stats = stats.get("mongodb", {})
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Stored Entities", f"{mongo_stats.get('total_entities', 0):,}")
+        with col2:
+            st.metric("Raw Records", f"{mongo_stats.get('total_raw_records', 0):,}")
+        
+        # Neo4j stats
+        st.subheader("Neo4j Graph Database")
+        neo4j_stats = stats.get("neo4j", {})
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Graph Nodes", f"{neo4j_stats.get('total_nodes', 0):,}")
+        with col2:
+            st.metric("Relationships", f"{neo4j_stats.get('total_relationships', 0):,}")
+        
+        # Detailed breakdowns
+        st.divider()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Entities by Type")
+            by_type_df = pd.DataFrame(
+                list(es_stats.get("by_type", {}).items()),
+                columns=["Type", "Count"]
+            ).sort_values("Count", ascending=False)
+            
+            if not by_type_df.empty:
+                st.dataframe(by_type_df, use_container_width=True, hide_index=True)
+        
+        with col2:
+            st.subheader("Entities by Source")
+            by_source_df = pd.DataFrame(
+                list(es_stats.get("by_source", {}).items()),
+                columns=["Source", "Count"]
+            ).sort_values("Count", ascending=False)
+            
+            if not by_source_df.empty:
+                st.dataframe(by_source_df, use_container_width=True, hide_index=True)
+
+
+def show_import():
+    """Show import interface"""
+    st.header("📥 Import Data")
+    
+    tab1, tab2 = st.tabs(["Start New Import", "Monitor Jobs"])
+    
+    with tab1:
+        st.subheader("Start MySQL Import Job")
+        
+        with st.form("import_form"):
+            source_name = st.text_input("Source Name", placeholder="e.g., leaked_db_2023")
+            
+            dump_file = st.text_input(
+                "MySQL Dump File Path (optional)",
+                placeholder="/dumps/database_dump.sql"
+            )
+            
+            tables_input = st.text_area(
+                "Tables to Import (one per line, leave empty for all tables)",
+                placeholder="users\naccounts\nemails"
+            )
+            
+            st.subheader("Field Mapping Configuration")
+            st.info("Map source fields to standard fields: email, ip, domain, username, phone")
+            
+            field_mapping_text = st.text_area(
+                "Field Mapping (JSON format)",
+                placeholder='{\n  "users": {\n    "email_addr": "email",\n    "user_name": "username"\n  }\n}',
+                height=150
+            )
+            
+            submit = st.form_submit_button("🚀 Start Import", use_container_width=True)
+        
+        if submit and source_name:
+            # Parse tables
+            tables = [t.strip() for t in tables_input.split("\n") if t.strip()] if tables_input else None
+            
+            # Parse field mapping
+            field_mapping = None
+            if field_mapping_text:
+                try:
+                    import json
+                    field_mapping = json.loads(field_mapping_text)
+                except Exception as e:
+                    st.error(f"Invalid JSON in field mapping: {e}")
+                    return
+            
+            # Start import
+            with st.spinner("Starting import job..."):
+                result = start_import_job(
+                    source_name,
+                    tables,
+                    field_mapping,
+                    dump_file if dump_file else None
+                )
+            
+            if result:
+                st.success(f"✅ Import job started! Job ID: {result.get('job_id')}")
+                st.info("Monitor the job progress in the 'Monitor Jobs' tab")
+    
+    with tab2:
+        st.subheader("Monitor Import Jobs")
+        
+        if st.button("🔄 Refresh Jobs"):
+            st.rerun()
+        
+        try:
+            response = requests.get(f"{API_BASE}/import/jobs", timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                jobs = data.get("jobs", [])
+                
+                if jobs:
+                    for job in jobs:
+                        with st.expander(f"Job: {job.get('source_name', 'N/A')} - {job.get('status', 'unknown')}"):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write(f"**Job ID:** `{job.get('job_id', 'N/A')}`")
+                                st.write(f"**Status:** `{job.get('status', 'N/A')}`")
+                                st.write(f"**Source:** `{job.get('source_name', 'N/A')}`")
+                            
+                            with col2:
+                                st.write(f"**Started:** `{job.get('started_at', 'N/A')}`")
+                                st.write(f"**Total Records:** `{job.get('total_records', 0):,}`")
+                                st.write(f"**Processed:** `{job.get('processed_records', 0):,}`")
+                else:
+                    st.info("No import jobs found")
+        except Exception as e:
+            st.error(f"Failed to load jobs: {e}")
+
+
+def show_relationships():
+    """Show relationship explorer"""
+    st.header("🕸️ Entity Relationships")
+    
+    st.info("Enter an entity ID in the format: `type:value` (e.g., `email:user@example.com`)")
+    
+    entity_id = st.text_input("Entity ID", placeholder="email:user@example.com")
+    depth = st.slider("Relationship Depth", min_value=1, max_value=3, value=1)
+    
+    if st.button("🔍 Explore Relationships") and entity_id:
+        with st.spinner("Loading relationships..."):
+            result = get_entity_relationships(entity_id, depth)
+        
+        if result:
+            relationships = result.get("relationships", [])
+            
+            if relationships:
+                st.success(f"Found {len(relationships)} relationship paths")
+                
+                for idx, rel in enumerate(relationships):
+                    with st.expander(f"Path {idx + 1}"):
+                        nodes = rel.get("nodes", [])
+                        rels = rel.get("relationships", [])
+                        
+                        st.write("**Nodes:**")
+                        for node in nodes:
+                            st.write(f"- {node.get('entity_type', 'N/A')}: `{node.get('value', 'N/A')}`")
+                        
+                        st.write("**Relationships:**")
+                        for r in rels:
+                            st.write(f"- Type: `{r.get('type', 'N/A')}`")
+            else:
+                st.info("No relationships found")
+
+
+if __name__ == "__main__":
+    main()
